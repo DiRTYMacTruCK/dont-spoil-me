@@ -13,7 +13,7 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 PLUGIN_NAME="dont-spoil-me"
 ASSEMBLY="Jellyfin.Plugin.DontSpoilMe"
-VERSION="1.1.2.0"
+VERSION="1.1.3.0"
 GUID="b2c3d4e5-f6a7-8901-bcde-f12345678901"
 BUILD_DIR="/tmp/dontspoilme_build"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -149,7 +149,7 @@ cat > "$BUILD_DIR/DontSpoilMe.csproj" << CSPROJ
     <AssemblyName>${ASSEMBLY}</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.DontSpoilMe</RootNamespace>
     <Nullable>enable</Nullable>
-    <Version>1.1.2</Version>
+    <Version>1.1.3</Version>
     <Company>DiRTYMacTruCK</Company>
     <Authors>DiRTYMacTruCK</Authors>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
@@ -257,68 +257,122 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
         serviceCollection.AddHostedService<DontSpoilMeWatchedListener>();
+        serviceCollection.AddHostedService<DontSpoilMeLibraryListener>();
     }
 }
 CS
 
 cat > "$BUILD_DIR/DontSpoilMeImageProvider.cs" << 'CS'
-using System.Collections.Generic;
-using System.Linq;
-using MediaBrowser.Controller.Entities;
+// This file intentionally left minimal — image swapping is now handled
+// by DontSpoilMeLibraryListener which physically copies the series poster
+// over the episode image after metadata refresh completes.
+// This ensures we override TMDB's cached images reliably.
+namespace Jellyfin.Plugin.DontSpoilMe;
+CS
+
+cat > "$BUILD_DIR/DontSpoilMeLibraryListener.cs" << 'CS'
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using MediaBrowser.Controller.Entities.TV;
-using MediaBrowser.Controller.Providers;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.IO;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.DontSpoilMe;
 
-public class DontSpoilMeImageProvider : ILocalImageProvider, IHasOrder
+/// <summary>
+/// Listens for library item refresh events and physically copies the series
+/// poster over the episode's Primary image file, overriding TMDB screenshots.
+/// </summary>
+public class DontSpoilMeLibraryListener : IHostedService
 {
-    private readonly ILogger<DontSpoilMeImageProvider> _logger;
+    private readonly ILibraryManager _libraryManager;
+    private readonly ILogger<DontSpoilMeLibraryListener> _logger;
 
-    public DontSpoilMeImageProvider(ILogger<DontSpoilMeImageProvider> logger)
+    public DontSpoilMeLibraryListener(
+        ILibraryManager libraryManager,
+        ILogger<DontSpoilMeLibraryListener> logger)
     {
+        _libraryManager = libraryManager;
         _logger = logger;
     }
 
-    public int Order => 0;
-    public string Name => "dont-spoil-me";
-    public bool Supports(BaseItem item) => item is Episode;
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _libraryManager.ItemUpdated += OnItemUpdated;
+        _libraryManager.ItemAdded += OnItemAdded;
+        return Task.CompletedTask;
+    }
 
-    public IEnumerable<LocalImageInfo> GetImages(BaseItem item, IDirectoryService directoryService)
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _libraryManager.ItemUpdated -= OnItemUpdated;
+        _libraryManager.ItemAdded -= OnItemAdded;
+        return Task.CompletedTask;
+    }
+
+    private void OnItemAdded(object? sender, ItemChangeEventArgs e)
+        => ProcessItem(e.Item);
+
+    private void OnItemUpdated(object? sender, ItemChangeEventArgs e)
+        => ProcessItem(e.Item);
+
+    private void ProcessItem(MediaBrowser.Controller.Entities.BaseItem item)
     {
         var config = Plugin.Instance?.Configuration;
         if (config is null || !config.IsEnabled)
-            yield break;
+            return;
 
         if (item is not Episode episode)
-            yield break;
+            return;
 
-        if (config.OnlyUnwatched && episode.UserData != null && episode.UserData.Any(u => u.Played))
-            yield break;
+        if (config.OnlyUnwatched && episode.UserData != null)
+        {
+            foreach (var ud in episode.UserData)
+            {
+                if (ud.Played) return;
+            }
+        }
 
         var series = episode.Series;
         if (series is null)
         {
-            _logger.LogDebug("dont-spoil-me: no series found for episode {Id}", episode.Id);
-            yield break;
+            _logger.LogDebug("dont-spoil-me: no series for episode {Id}", episode.Id);
+            return;
         }
 
         var seriesImageInfo = series.GetImageInfo(ImageType.Primary, 0);
         if (seriesImageInfo is null || string.IsNullOrEmpty(seriesImageInfo.Path))
         {
-            _logger.LogDebug("dont-spoil-me: series {SeriesId} has no Primary image", series.Id);
-            yield break;
+            _logger.LogDebug("dont-spoil-me: series {SeriesId} has no poster", series.Id);
+            return;
         }
 
-        _logger.LogDebug("dont-spoil-me: swapping episode {EpisodeId} thumb with series poster", episode.Id);
-
-        yield return new LocalImageInfo
+        var episodeImageInfo = episode.GetImageInfo(ImageType.Primary, 0);
+        if (episodeImageInfo is null || string.IsNullOrEmpty(episodeImageInfo.Path))
         {
-            FileInfo = new FileSystemMetadata { FullName = seriesImageInfo.Path, IsDirectory = false },
-            Type = ImageType.Primary
-        };
+            _logger.LogDebug("dont-spoil-me: episode {Id} has no Primary image yet", episode.Id);
+            return;
+        }
+
+        // Don't copy if the episode image is already the series poster
+        if (string.Equals(episodeImageInfo.Path, seriesImageInfo.Path, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            File.Copy(seriesImageInfo.Path, episodeImageInfo.Path, overwrite: true);
+            _logger.LogInformation(
+                "dont-spoil-me: copied series poster over episode {EpisodeId} image",
+                episode.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "dont-spoil-me: failed to copy poster for episode {Id}", episode.Id);
+        }
     }
 }
 CS

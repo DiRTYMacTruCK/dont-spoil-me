@@ -6,6 +6,9 @@ using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
+[assembly: System.Reflection.AssemblyCompanyAttribute("DiRTYMacTruCK")]
+[assembly: System.Reflection.AssemblyProductAttribute("dont-spoil-me")]
+
 namespace Jellyfin.Plugin.DontSpoilMe;
 
 public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages

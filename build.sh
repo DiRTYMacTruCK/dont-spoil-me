@@ -150,6 +150,8 @@ cat > "$BUILD_DIR/DontSpoilMe.csproj" << CSPROJ
     <RootNamespace>Jellyfin.Plugin.DontSpoilMe</RootNamespace>
     <Nullable>enable</Nullable>
     <Version>1.1.2</Version>
+    <Company>DiRTYMacTruCK</Company>
+    <Authors>DiRTYMacTruCK</Authors>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
@@ -507,11 +509,34 @@ XMLEOF
     fi
 }
 
+write_meta_json() {
+    local dest_dir="$1"
+    cat > "${dest_dir}/meta.json" << METAEOF
+{
+  "category": "General",
+  "changelog": "Auto-create default config file on install.",
+  "description": "Replaces episode thumbnail images with the series poster to prevent spoilers.",
+  "guid": "${GUID}",
+  "name": "dont-spoil-me",
+  "overview": "Hides spoiler thumbnails for unwatched TV episodes by showing the series poster instead.",
+  "owner": "DiRTYMacTruCK",
+  "targetAbi": "${JELLYFIN_VERSION}",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%S.0000000Z")",
+  "version": "${VERSION}",
+  "status": "Active",
+  "autoUpdate": false,
+  "assemblies": []
+}
+METAEOF
+    echo "✅  meta.json written"
+}
+
 # Try bare metal install
 if [ -d "/var/lib/jellyfin" ]; then
     DEST="/var/lib/jellyfin/plugins/DontSpoilMe"
     sudo mkdir -p "$DEST"
     sudo cp "${BUILD_DIR}/dist/${ASSEMBLY}.dll" "$DEST/"
+    sudo bash -c "$(declare -f write_meta_json); GUID='${GUID}' JELLYFIN_VERSION='${JELLYFIN_VERSION}' VERSION='${VERSION}' write_meta_json '$DEST'"
     sudo chown -R jellyfin:jellyfin "$DEST"
     CONFIG_FILE="/var/lib/jellyfin/plugins/configurations/${ASSEMBLY}.xml"
     sudo bash -c "$(declare -f write_default_config); write_default_config '$CONFIG_FILE'"
@@ -543,6 +568,7 @@ for m in mounts:
         fi
         mkdir -p "$DEST"
         cp "${BUILD_DIR}/dist/${ASSEMBLY}.dll" "$DEST/"
+        write_meta_json "$DEST"
         write_default_config "${CONFIG_DIR}/plugins/configurations/${ASSEMBLY}.xml"
         echo "✅  Installed to $DEST"
         echo "▶   Restarting Jellyfin container..."

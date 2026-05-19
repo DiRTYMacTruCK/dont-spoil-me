@@ -1,56 +1,57 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8" />
-    <title>dont-spoil-me</title>
-    <style>
-        body { font-family: sans-serif; max-width: 480px; margin: 2rem auto; color: #ddd; background: transparent; }
-        h2   { margin-bottom: 0.25rem; }
-        p.sub { margin-top: 0; color: #aaa; font-size: 0.9rem; }
-        .field { margin: 1.5rem 0; display: flex; align-items: center; gap: 1rem; }
-        label { cursor: pointer; font-size: 1rem; }
-        input[type=checkbox] { width: 1.2rem; height: 1.2rem; cursor: pointer; }
-        button { margin-top: 1rem; padding: 0.5rem 1.5rem; background: #00a4dc; border: none;
-                 border-radius: 4px; color: #fff; font-size: 1rem; cursor: pointer; }
-        button:hover { background: #0082b0; }
-        #status { margin-top: 0.75rem; font-size: 0.9rem; color: #7c7; min-height: 1.2em; }
-    </style>
-</head>
-<body>
-<h2>🙈 dont-spoil-me</h2>
-<p class="sub">Shows the series poster instead of episode thumbnails to hide spoilers.</p>
-<div class="field">
-    <input type="checkbox" id="isEnabled" />
-    <label for="isEnabled">Enable dont-spoil-me</label>
+<div id="DontSpoilMeConfigPage">
+    <div class="content-primary">
+        <div class="verticalSection">
+            <div class="sectionTitleContainer">
+                <h2 class="sectionTitle">🙈 dont-spoil-me</h2>
+            </div>
+            <p>Shows the series poster instead of episode thumbnails to prevent spoilers.</p>
+
+            <div class="checkboxContainer">
+                <label>
+                    <input id="chkEnabled" type="checkbox" is="emby-checkbox" />
+                    <span>Enable dont-spoil-me</span>
+                </label>
+            </div>
+
+            <div class="checkboxContainer">
+                <label>
+                    <input id="chkOnlyUnwatched" type="checkbox" is="emby-checkbox" />
+                    <span>Only hide thumbnails for unwatched episodes</span>
+                </label>
+            </div>
+
+            <br/>
+            <button id="btnSave" is="emby-button" type="button" class="raised button-submit block">
+                <span>Save</span>
+            </button>
+            <p id="saveStatus" style="color:#7c7; display:none;">Settings saved.</p>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function() {
+            var pluginId = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
+
+            function loadConfig() {
+                ApiClient.getPluginConfiguration(pluginId).then(function(config) {
+                    document.getElementById('chkEnabled').checked = config.IsEnabled;
+                    document.getElementById('chkOnlyUnwatched').checked = config.OnlyUnwatched;
+                });
+            }
+
+            document.getElementById('btnSave').addEventListener('click', function() {
+                ApiClient.getPluginConfiguration(pluginId).then(function(config) {
+                    config.IsEnabled = document.getElementById('chkEnabled').checked;
+                    config.OnlyUnwatched = document.getElementById('chkOnlyUnwatched').checked;
+                    ApiClient.updatePluginConfiguration(pluginId, config).then(function() {
+                        var status = document.getElementById('saveStatus');
+                        status.style.display = 'block';
+                        setTimeout(function() { status.style.display = 'none'; }, 3000);
+                    });
+                });
+            });
+
+            loadConfig();
+        })();
+    </script>
 </div>
-<div class="field">
-    <input type="checkbox" id="onlyUnwatched" />
-    <label for="onlyUnwatched">Only hide thumbnails for <strong>unwatched</strong> episodes</label>
-</div>
-<button onclick="save()">Save</button>
-<div id="status"></div>
-<script>
-    const api = ApiClient;
-    async function load() {
-        try {
-            const resp = await api.ajax({ type: 'GET', url: api.getUrl('DontSpoilMe/Config') });
-            document.getElementById('isEnabled').checked     = resp.IsEnabled;
-            document.getElementById('onlyUnwatched').checked = resp.OnlyUnwatched;
-        } catch { document.getElementById('status').textContent = '⚠️ Failed to load config.'; }
-    }
-    async function save() {
-        const body = {
-            IsEnabled:     document.getElementById('isEnabled').checked,
-            OnlyUnwatched: document.getElementById('onlyUnwatched').checked
-        };
-        try {
-            await api.ajax({ type: 'POST', url: api.getUrl('DontSpoilMe/Config'),
-                             contentType: 'application/json', data: JSON.stringify(body) });
-            document.getElementById('status').textContent = '✅ Saved!';
-            setTimeout(() => document.getElementById('status').textContent = '', 3000);
-        } catch { document.getElementById('status').textContent = '⚠️ Save failed.'; }
-    }
-    load();
-</script>
-</body>
-</html>

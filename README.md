@@ -1,100 +1,104 @@
 # 🙈 dont-spoil-me — Jellyfin Plugin
 
-Replaces episode thumbnail images with the **series poster** so spoiler screenshots never ruin your next watch.
+Replaces episode thumbnail images with the series poster so spoiler screenshots never ruin your next watch.
 
-- Unwatched episodes → series poster shown instead of the episode thumbnail
-- When you finish watching an episode → real thumbnail is automatically restored
+- Unwatched episodes show the series poster instead of the episode thumbnail
+- When you finish watching an episode the real thumbnail is automatically restored
 - Works on any Jellyfin client (web, mobile, TV apps)
+
+---
+
+## Known Issue — Jellyfin 10.11.x Config Page
+
+Jellyfin 10.11.x broke the plugin config page system for third-party plugins. The settings page will appear blank when clicked. This is a Jellyfin bug, not a plugin bug. The plugin itself works correctly with its default settings.
+
+To change settings manually, edit the config file directly:
+
+Docker:
+  nano ~/docker/jellyfin/config/plugins/configurations/Jellyfin.Plugin.DontSpoilMe.xml
+
+Bare metal Linux:
+  sudo nano /var/lib/jellyfin/plugins/configurations/Jellyfin.Plugin.DontSpoilMe.xml
+
+The config file looks like this:
+
+  <?xml version="1.0" encoding="utf-8"?>
+  <PluginConfiguration>
+    <IsEnabled>true</IsEnabled>
+    <OnlyUnwatched>true</OnlyUnwatched>
+  </PluginConfiguration>
 
 ---
 
 ## Requirements
 
 - Jellyfin 10.9 or newer
-- .NET 9 SDK *(only needed to build — not needed to run)*
+- Docker or bare metal Jellyfin install
+- .NET 9 SDK (only needed to build, not to run)
 
 ---
 
-## Installing the Plugin
+## Building and Installing
 
-### Option A — Manual install (easiest, works everywhere)
+  git clone https://github.com/DiRTYMacTruCK/dont-spoil-me.git
+  cd dont-spoil-me
+  bash build.sh
 
-1. Download `dont-spoil-me_1.0.0.0.zip`
-2. Unzip it — you'll get `Jellyfin.Plugin.DontSpoilMe.dll`
-3. Copy the DLL into your Jellyfin plugins folder:
-
-**Bare metal Linux:**
-```bash
-mkdir -p /var/lib/jellyfin/plugins/DontSpoilMe
-cp Jellyfin.Plugin.DontSpoilMe.dll /var/lib/jellyfin/plugins/DontSpoilMe/
-chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/DontSpoilMe
-systemctl restart jellyfin
-```
-
-**Docker (docker-compose):**
-```bash
-# Find where your plugins folder is mounted, e.g. ~/jellyfin/config/plugins
-mkdir -p ~/jellyfin/config/plugins/DontSpoilMe
-cp Jellyfin.Plugin.DontSpoilMe.dll ~/jellyfin/config/plugins/DontSpoilMe/
-docker compose restart jellyfin
-```
-
-**Windows:**
-```
-Copy Jellyfin.Plugin.DontSpoilMe.dll to:
-C:\ProgramData\Jellyfin\Server\plugins\DontSpoilMe\
-Then restart the Jellyfin service.
-```
-
-4. Open the Jellyfin dashboard → **Plugins** → confirm **dont-spoil-me** is listed
-5. Go to **Dashboard → Scheduled Tasks** and run **Refresh Metadata** to apply immediately
+The build script handles everything automatically:
+- Finds dotnet 9 and installs it to ~/.dotnet if missing
+- Auto-detects Jellyfin DLLs whether bare metal or Docker
+- Builds the plugin
+- Installs the DLL to your Jellyfin plugins folder
+- Restarts Jellyfin
 
 ---
 
-### Option B — Build from source
+## Manual Install
 
-If you want to build the DLL yourself (e.g. after a Jellyfin update):
+1. Download dont-spoil-me_1.1.0.0.zip from the releases page
+2. Unzip it to get Jellyfin.Plugin.DontSpoilMe.dll
+3. Copy the DLL into your Jellyfin plugins folder
 
-**Requirements:** .NET 9 SDK, Jellyfin installed on the same machine
+Docker:
+  mkdir -p ~/docker/jellyfin/config/plugins/DontSpoilMe
+  cp Jellyfin.Plugin.DontSpoilMe.dll ~/docker/jellyfin/config/plugins/DontSpoilMe/
+  docker restart jellyfin
 
-```bash
-# Clone or download this repo, then:
-bash build.sh
-```
+Bare metal Linux:
+  sudo mkdir -p /var/lib/jellyfin/plugins/DontSpoilMe
+  sudo cp Jellyfin.Plugin.DontSpoilMe.dll /var/lib/jellyfin/plugins/DontSpoilMe/
+  sudo chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/DontSpoilMe
+  sudo systemctl restart jellyfin
 
-The script will:
-- Auto-detect your dotnet installation (installs it if missing)
-- Auto-detect your Jellyfin DLL location (bare metal or Docker volume)
-- Build the plugin
-- Output `dist/dont-spoil-me_1.0.0.0.zip` ready to install
+Windows:
+  Copy Jellyfin.Plugin.DontSpoilMe.dll to:
+  C:\ProgramData\Jellyfin\Server\plugins\DontSpoilMe\
+  Then restart the Jellyfin service.
 
-If your Jellyfin DLLs are in a non-standard location:
-```bash
-JELLYFIN_LIB=/path/to/jellyfin/lib bash build.sh
-```
+4. Open the Jellyfin dashboard and go to Plugins to confirm dont-spoil-me is listed
+5. Go to Dashboard, Scheduled Tasks, and run Refresh Metadata to apply immediately
 
 ---
 
-## Configuration
+## Default Settings
 
-After installing, go to **Dashboard → Plugins → dont-spoil-me**:
+IsEnabled: true
+  Master on/off switch
 
-| Setting | Default | Description |
-|---|---|---|
-| Enable dont-spoil-me | ✅ On | Master on/off switch |
-| Only hide unwatched episodes | ✅ On | Watched episodes show their real thumbnail |
+OnlyUnwatched: true
+  Watched episodes show their real thumbnail, unwatched episodes show the series poster
 
 ---
 
 ## Troubleshooting
 
-**Thumbnails not changing after install**
-Run a metadata refresh: Dashboard → Scheduled Tasks → Refresh Metadata
+Thumbnails not changing after install:
+  Run a metadata refresh from Dashboard, Scheduled Tasks, Refresh Metadata
 
-**Watched episodes still showing series poster**
-Make sure "Only hide unwatched episodes" is enabled, then run a metadata refresh.
+Watched episodes still showing series poster:
+  Make sure OnlyUnwatched is set to true in the config XML, then run a metadata refresh
 
-**Plugin not showing in dashboard**
-- Check the DLL is in the right folder and Jellyfin was restarted
-- Check logs: `journalctl -u jellyfin | grep -i "dont\|spoil"` (bare metal)
-  or `docker logs jellyfin | grep -i "dont\|spoil"` (Docker)
+Plugin not showing in dashboard:
+  Check the DLL is in the correct folder and Jellyfin was restarted
+  Docker:     docker logs jellyfin | grep -i "dont\|spoil"
+  Bare metal: journalctl -u jellyfin | grep -i "dont\|spoil"

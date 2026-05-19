@@ -1,0 +1,16 @@
+# Build output
+dist/
+obj/
+bin/
+
+# dotnet temp files
+*.user
+*.suo
+.vs/
+
+# Build script temp dirs
+/tmp/dontspoilme_*
+
+# OS
+.DS_Store
+Thumbs.db

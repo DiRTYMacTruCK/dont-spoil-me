@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>Jellyfin.Plugin.DontSpoilMe</AssemblyName>
+    <RootNamespace>Jellyfin.Plugin.DontSpoilMe</RootNamespace>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Jellyfin.Controller" Version="10.9.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Model" Version="10.9.0" ExcludeAssets="runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Configuration\configPage.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>

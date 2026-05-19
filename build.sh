@@ -13,7 +13,7 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 PLUGIN_NAME="dont-spoil-me"
 ASSEMBLY="Jellyfin.Plugin.DontSpoilMe"
-VERSION="1.1.0.0"
+VERSION="1.1.2.0"
 GUID="b2c3d4e5-f6a7-8901-bcde-f12345678901"
 BUILD_DIR="/tmp/dontspoilme_build"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -149,7 +149,7 @@ cat > "$BUILD_DIR/DontSpoilMe.csproj" << CSPROJ
     <AssemblyName>${ASSEMBLY}</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.DontSpoilMe</RootNamespace>
     <Nullable>enable</Nullable>
-    <Version>1.1.0</Version>
+    <Version>1.1.2</Version>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
@@ -415,62 +415,19 @@ public class DontSpoilMeController : ControllerBase
 CS
 
 cat > "$BUILD_DIR/Configuration/configPage.html" << 'HTML'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8" />
-    <title>dont-spoil-me</title>
-    <style>
-        body { font-family: sans-serif; max-width: 480px; margin: 2rem auto; color: #ddd; background: transparent; }
-        h2   { margin-bottom: 0.25rem; }
-        p.sub { margin-top: 0; color: #aaa; font-size: 0.9rem; }
-        .field { margin: 1.5rem 0; display: flex; align-items: center; gap: 1rem; }
-        label { cursor: pointer; font-size: 1rem; }
-        input[type=checkbox] { width: 1.2rem; height: 1.2rem; cursor: pointer; }
-        button { margin-top: 1rem; padding: 0.5rem 1.5rem; background: #00a4dc; border: none;
-                 border-radius: 4px; color: #fff; font-size: 1rem; cursor: pointer; }
-        button:hover { background: #0082b0; }
-        #status { margin-top: 0.75rem; font-size: 0.9rem; color: #7c7; min-height: 1.2em; }
-    </style>
-</head>
-<body>
-<h2>🙈 dont-spoil-me</h2>
-<p class="sub">Shows the series poster instead of episode thumbnails to hide spoilers.</p>
-<div class="field">
-    <input type="checkbox" id="isEnabled" />
-    <label for="isEnabled">Enable dont-spoil-me</label>
+<div id="DontSpoilMeConfigPage">
+    <div class="content-primary">
+        <div class="verticalSection">
+            <div class="sectionTitleContainer">
+                <h2 class="sectionTitle">🙈 dont-spoil-me</h2>
+            </div>
+            <p>Shows the series poster instead of episode thumbnails to prevent spoilers.</p>
+            <p><strong>Note:</strong> Jellyfin 10.11.x has a known issue where plugin config pages appear blank.
+            Edit the config file directly until this is fixed by Jellyfin.
+            See the README on GitHub for instructions.</p>
+        </div>
+    </div>
 </div>
-<div class="field">
-    <input type="checkbox" id="onlyUnwatched" />
-    <label for="onlyUnwatched">Only hide thumbnails for <strong>unwatched</strong> episodes</label>
-</div>
-<button onclick="save()">Save</button>
-<div id="status"></div>
-<script>
-    const api = ApiClient;
-    async function load() {
-        try {
-            const resp = await api.ajax({ type: 'GET', url: api.getUrl('DontSpoilMe/Config') });
-            document.getElementById('isEnabled').checked     = resp.IsEnabled;
-            document.getElementById('onlyUnwatched').checked = resp.OnlyUnwatched;
-        } catch { document.getElementById('status').textContent = '⚠️ Failed to load config.'; }
-    }
-    async function save() {
-        const body = {
-            IsEnabled:     document.getElementById('isEnabled').checked,
-            OnlyUnwatched: document.getElementById('onlyUnwatched').checked
-        };
-        try {
-            await api.ajax({ type: 'POST', url: api.getUrl('DontSpoilMe/Config'),
-                             contentType: 'application/json', data: JSON.stringify(body) });
-            document.getElementById('status').textContent = '✅ Saved!';
-            setTimeout(() => document.getElementById('status').textContent = '', 3000);
-        } catch { document.getElementById('status').textContent = '⚠️ Save failed.'; }
-    }
-    load();
-</script>
-</body>
-</html>
 HTML
 
 # =============================================================================
@@ -510,14 +467,14 @@ cat > "${DIST_DIR}/manifest.json" << MANIFEST
     "name": "dont-spoil-me",
     "description": "Replaces episode thumbnail images with the series poster to prevent spoilers.",
     "overview": "Hides spoiler thumbnails for unwatched TV episodes by showing the series poster instead.",
-    "owner": "dirty",
+    "owner": "DiRTYMacTruCK",
     "category": "General",
     "versions": [
       {
         "version": "${VERSION}",
-        "changelog": "Initial release.",
+        "changelog": "Auto-create default config file on install. Note Jellyfin 10.11.x config page issue.",
         "targetAbi": "${JELLYFIN_VERSION}",
-        "sourceUrl": "https://example.com/${PLUGIN_NAME}_${VERSION}.zip",
+        "sourceUrl": "https://github.com/DiRTYMacTruCK/dont-spoil-me/releases/download/v1.1.2/${PLUGIN_NAME}_${VERSION}.zip",
         "checksum": "${CHECKSUM}",
         "timestamp": "${TIMESTAMP}"
       }
@@ -533,12 +490,32 @@ echo "✅  Packaged: $ZIPFILE"
 # =============================================================================
 echo "▶   Installing plugin..."
 
+write_default_config() {
+    local config_file="$1"
+    if [ ! -f "$config_file" ]; then
+        echo "▶   Creating default config file..."
+        cat > "$config_file" << 'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <IsEnabled>true</IsEnabled>
+  <OnlyUnwatched>true</OnlyUnwatched>
+</PluginConfiguration>
+XMLEOF
+        echo "✅  Default config created at $config_file"
+    else
+        echo "✅  Config file already exists, skipping"
+    fi
+}
+
 # Try bare metal install
 if [ -d "/var/lib/jellyfin" ]; then
     DEST="/var/lib/jellyfin/plugins/DontSpoilMe"
     sudo mkdir -p "$DEST"
     sudo cp "${BUILD_DIR}/dist/${ASSEMBLY}.dll" "$DEST/"
     sudo chown -R jellyfin:jellyfin "$DEST"
+    CONFIG_FILE="/var/lib/jellyfin/plugins/configurations/${ASSEMBLY}.xml"
+    sudo bash -c "$(declare -f write_default_config); write_default_config '$CONFIG_FILE'"
+    sudo chown jellyfin:jellyfin "$CONFIG_FILE" 2>/dev/null || true
     echo "✅  Installed to $DEST"
     echo "▶   Restarting Jellyfin..."
     sudo systemctl restart jellyfin
@@ -560,13 +537,13 @@ for m in mounts:
         echo "    Unzip $ZIPFILE into your Jellyfin plugins folder"
     else
         DEST="${CONFIG_DIR}/plugins/DontSpoilMe"
-        # Fix ownership so current user can write without sudo
         if [ ! -w "${CONFIG_DIR}/plugins" ]; then
             echo "▶   Fixing plugins folder ownership..."
             sudo chown -R "$(whoami):$(whoami)" "${CONFIG_DIR}/plugins"
         fi
         mkdir -p "$DEST"
         cp "${BUILD_DIR}/dist/${ASSEMBLY}.dll" "$DEST/"
+        write_default_config "${CONFIG_DIR}/plugins/configurations/${ASSEMBLY}.xml"
         echo "✅  Installed to $DEST"
         echo "▶   Restarting Jellyfin container..."
         docker restart "$JELLYFIN_CONTAINER"
@@ -581,4 +558,3 @@ rm -rf "$TMP_DLL_DIR"
 
 echo ""
 echo "🙈 Done!"
-echo ""

@@ -28,9 +28,7 @@ The config file looks like this:
 
 ---
 
-## Install via Jellyfin Catalog (Recommended)
-
-This is the easiest method. Everything is automatic.
+## Install via Jellyfin (Recommended)
 
 1. Open Jellyfin Dashboard
 2. Go to Plugins, then Repositories
@@ -38,7 +36,7 @@ This is the easiest method. Everything is automatic.
      Name: dont-spoil-me
      URL:  https://dirtymactruck.github.io/dont-spoil-me/manifest.json
 4. Click Save
-5. Go to Plugins, then Catalog
+5. Go to Plugins and click the Available tab
 6. Find dont-spoil-me and click Install
 7. Restart Jellyfin when prompted
 8. Go to Dashboard, Scheduled Tasks, and run Refresh Metadata
@@ -47,7 +45,7 @@ This is the easiest method. Everything is automatic.
 
 ## Install Manually
 
-1. Download dont-spoil-me_1.1.2.0.zip from the releases page:
+1. Download dont-spoil-me_1.1.3.0.zip from the releases page:
    https://github.com/DiRTYMacTruCK/dont-spoil-me/releases/latest
 
 2. Unzip it to get Jellyfin.Plugin.DontSpoilMe.dll
@@ -116,4 +114,4 @@ Plugin not showing in dashboard:
   Bare metal: journalctl -u jellyfin | grep -i "dont\|spoil"
 
 Developer and Repository show Unknown:
-  Uninstall the plugin and reinstall it via the catalog method above
+  Uninstall the plugin and reinstall it via the repository method above

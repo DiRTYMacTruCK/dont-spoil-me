@@ -38,7 +38,7 @@ The config file looks like this:
 4. Click Save
 5. Go to Plugins and click the Available tab
 6. Find dont-spoil-me and click Install
-7. Restart Jellyfin when prompted
+7. Restart Jellyfin — this is required for the plugin to activate
 8. Go to Dashboard, Scheduled Tasks, and run Refresh Metadata
 
 ---

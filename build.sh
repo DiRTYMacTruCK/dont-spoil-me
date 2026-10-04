@@ -13,7 +13,7 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 PLUGIN_NAME="dont-spoil-me"
 ASSEMBLY="Jellyfin.Plugin.DontSpoilMe"
-VERSION="1.1.3.0"
+VERSION="1.1.6.0"
 GUID="b2c3d4e5-f6a7-8901-bcde-f12345678901"
 BUILD_DIR="/tmp/dontspoilme_build"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,9 +24,10 @@ echo "🙈 dont-spoil-me build script"
 echo "=============================="
 
 # =============================================================================
-# STEP 1 — Find or install dotnet 9
+# STEP 1 — Define helper to locate dotnet (version resolved in Step 2b)
 # =============================================================================
 find_dotnet() {
+    local min_ver="${1:-9}"
     for candidate in \
         "$(which dotnet 2>/dev/null || true)" \
         "/usr/bin/dotnet" \
@@ -36,7 +37,7 @@ find_dotnet() {
         if [ -x "$candidate" ]; then
             local ver
             ver=$("$candidate" --version 2>/dev/null | cut -d. -f1 || echo "0")
-            if [ "${ver:-0}" -ge 9 ] 2>/dev/null; then
+            if [ "${ver:-0}" -ge "$min_ver" ] 2>/dev/null; then
                 echo "$candidate"
                 return 0
             fi
@@ -46,22 +47,8 @@ find_dotnet() {
 }
 
 DOTNET=""
-if DOTNET=$(find_dotnet); then
-    echo "✅  Found dotnet at $DOTNET (v$("$DOTNET" --version))"
-else
-    echo "▶   dotnet 9 not found — installing to ~/.dotnet ..."
-    curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- \
-        --channel 9.0 \
-        --install-dir "$HOME/.dotnet" \
-        --no-path
-    DOTNET="$HOME/.dotnet/dotnet"
-    if [ ! -x "$DOTNET" ]; then
-        echo "❌  dotnet install failed."
-        echo "    Install manually: https://dotnet.microsoft.com/download/dotnet/9.0"
-        exit 1
-    fi
-    echo "✅  Installed dotnet $("$DOTNET" --version)"
-fi
+TARGET_FRAMEWORK="net10.0"
+REQUIRED_DOTNET_MAJOR=10
 
 # =============================================================================
 # STEP 2 — Find Jellyfin DLLs (bare metal or Docker)
@@ -136,6 +123,26 @@ fi
 echo "✅  Jellyfin DLLs: $JELLYFIN_LIB"
 
 # =============================================================================
+# STEP 2b — Find or install dotnet SDK
+# =============================================================================
+if DOTNET=$(find_dotnet "$REQUIRED_DOTNET_MAJOR"); then
+    echo "✅  Found dotnet at $DOTNET (v$("$DOTNET" --version))"
+else
+    echo "▶   dotnet ${REQUIRED_DOTNET_MAJOR} not found — installing to ~/.dotnet ..."
+    curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- \
+        --channel "${REQUIRED_DOTNET_MAJOR}.0" \
+        --install-dir "$HOME/.dotnet" \
+        --no-path
+    DOTNET="$HOME/.dotnet/dotnet"
+    if [ ! -x "$DOTNET" ]; then
+        echo "❌  dotnet install failed."
+        echo "    Install manually: https://dotnet.microsoft.com/download/dotnet/${REQUIRED_DOTNET_MAJOR}.0"
+        exit 1
+    fi
+    echo "✅  Installed dotnet $("$DOTNET" --version)"
+fi
+
+# =============================================================================
 # STEP 3 — Write source files
 # =============================================================================
 echo "▶   Writing source files..."
@@ -145,11 +152,11 @@ mkdir -p "$BUILD_DIR"/{Configuration,Api}
 cat > "$BUILD_DIR/DontSpoilMe.csproj" << CSPROJ
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>${TARGET_FRAMEWORK}</TargetFramework>
     <AssemblyName>${ASSEMBLY}</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.DontSpoilMe</RootNamespace>
     <Nullable>enable</Nullable>
-    <Version>1.1.3</Version>
+    <Version>1.1.6</Version>
     <Company>DiRTYMacTruCK</Company>
     <Authors>DiRTYMacTruCK</Authors>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
@@ -256,8 +263,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
-        serviceCollection.AddHostedService<DontSpoilMeWatchedListener>();
-        serviceCollection.AddHostedService<DontSpoilMeLibraryListener>();
+        serviceCollection.AddHostedService<DontSpoilMeService>();
     }
 }
 CS
@@ -272,172 +278,266 @@ CS
 
 cat > "$BUILD_DIR/DontSpoilMeLibraryListener.cs" << 'CS'
 using System;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.IO;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.DontSpoilMe;
 
 /// <summary>
-/// Listens for library item refresh events and physically copies the series
-/// poster over the episode's Primary image file, overriding TMDB screenshots.
+/// One stateless rule, applied on every relevant event and once at startup:
+///   nobody has played the episode  -> episode image = series poster
+///   somebody has played it         -> episode image = real thumbnail
+/// The current state is read from disk (is the episode image byte-identical
+/// to the series poster?), so nothing is kept in memory and a restart, an
+/// un-watch, or a missed event all self-correct.
 /// </summary>
-public class DontSpoilMeLibraryListener : IHostedService
+public class DontSpoilMeService : IHostedService, IDisposable
 {
-    private readonly ILibraryManager _libraryManager;
-    private readonly ILogger<DontSpoilMeLibraryListener> _logger;
+    private static readonly TimeSpan RestoreCooldown = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(60);
 
-    public DontSpoilMeLibraryListener(
+    private readonly ILibraryManager _libraryManager;
+    private readonly IUserManager _userManager;
+    private readonly IUserDataManager _userDataManager;
+    private readonly IProviderManager _providerManager;
+    private readonly IFileSystem _fileSystem;
+    private readonly ILogger<DontSpoilMeService> _logger;
+
+    private readonly ConcurrentDictionary<Guid, DateTime> _recentRestores = new();
+    private readonly ConcurrentDictionary<Guid, object> _locks = new();
+    private readonly CancellationTokenSource _cts = new();
+
+    private enum Outcome { None, Hidden, Restored }
+
+    public DontSpoilMeService(
         ILibraryManager libraryManager,
-        ILogger<DontSpoilMeLibraryListener> logger)
+        IUserManager userManager,
+        IUserDataManager userDataManager,
+        IProviderManager providerManager,
+        IFileSystem fileSystem,
+        ILogger<DontSpoilMeService> logger)
     {
         _libraryManager = libraryManager;
+        _userManager = userManager;
+        _userDataManager = userDataManager;
+        _providerManager = providerManager;
+        _fileSystem = fileSystem;
         _logger = logger;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _libraryManager.ItemUpdated += OnItemUpdated;
-        _libraryManager.ItemAdded += OnItemAdded;
+        _libraryManager.ItemAdded += OnItemChanged;
+        _libraryManager.ItemUpdated += OnItemChanged;
+        _userDataManager.UserDataSaved += OnUserDataSaved;
+        _ = Task.Run(() => SweepAsync(_cts.Token));
+        _logger.LogInformation("dont-spoil-me: started (startup sweep in {Delay}s)", StartupDelay.TotalSeconds);
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        _libraryManager.ItemUpdated -= OnItemUpdated;
-        _libraryManager.ItemAdded -= OnItemAdded;
+        _cts.Cancel();
+        _libraryManager.ItemAdded -= OnItemChanged;
+        _libraryManager.ItemUpdated -= OnItemChanged;
+        _userDataManager.UserDataSaved -= OnUserDataSaved;
         return Task.CompletedTask;
     }
 
-    private void OnItemAdded(object? sender, ItemChangeEventArgs e)
-        => ProcessItem(e.Item);
+    public void Dispose() => _cts.Dispose();
 
-    private void OnItemUpdated(object? sender, ItemChangeEventArgs e)
-        => ProcessItem(e.Item);
-
-    private void ProcessItem(MediaBrowser.Controller.Entities.BaseItem item)
+    private void OnItemChanged(object? sender, ItemChangeEventArgs e)
     {
-        var config = Plugin.Instance?.Configuration;
-        if (config is null || !config.IsEnabled)
-            return;
+        if (e.Item is Episode episode)
+            Sync(episode, quiet: false);
+    }
 
-        if (item is not Episode episode)
-            return;
+    private void OnUserDataSaved(object? sender, UserDataSaveEventArgs e)
+    {
+        if (e.Item is Episode episode)
+            Sync(episode, quiet: false);
+    }
 
-        if (config.OnlyUnwatched && episode.UserData != null)
-        {
-            foreach (var ud in episode.UserData)
-            {
-                if (ud.Played) return;
-            }
-        }
-
-        var series = episode.Series;
-        if (series is null)
-        {
-            _logger.LogDebug("dont-spoil-me: no series for episode {Id}", episode.Id);
-            return;
-        }
-
-        var seriesImageInfo = series.GetImageInfo(ImageType.Primary, 0);
-        if (seriesImageInfo is null || string.IsNullOrEmpty(seriesImageInfo.Path))
-        {
-            _logger.LogDebug("dont-spoil-me: series {SeriesId} has no poster", series.Id);
-            return;
-        }
-
-        var episodeImageInfo = episode.GetImageInfo(ImageType.Primary, 0);
-        if (episodeImageInfo is null || string.IsNullOrEmpty(episodeImageInfo.Path))
-        {
-            _logger.LogDebug("dont-spoil-me: episode {Id} has no Primary image yet", episode.Id);
-            return;
-        }
-
-        // Don't copy if the episode image is already the series poster
-        if (string.Equals(episodeImageInfo.Path, seriesImageInfo.Path, StringComparison.OrdinalIgnoreCase))
-            return;
-
+    private async Task SweepAsync(CancellationToken ct)
+    {
         try
         {
-            File.Copy(seriesImageInfo.Path, episodeImageInfo.Path, overwrite: true);
+            await Task.Delay(StartupDelay, ct).ConfigureAwait(false);
+
+            int checkedCount = 0, hidden = 0, restored = 0;
+            foreach (var item in _libraryManager.RootFolder.GetRecursiveChildren(i => i is Episode))
+            {
+                ct.ThrowIfCancellationRequested();
+                checkedCount++;
+                switch (Sync((Episode)item, quiet: true))
+                {
+                    case Outcome.Hidden: hidden++; break;
+                    case Outcome.Restored: restored++; break;
+                }
+            }
+
             _logger.LogInformation(
-                "dont-spoil-me: copied series poster over episode {EpisodeId} image",
-                episode.Id);
+                "dont-spoil-me: startup sweep done — {Checked} episodes checked, {Hidden} hidden, {Restored} restored",
+                checkedCount, hidden, restored);
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "dont-spoil-me: failed to copy poster for episode {Id}", episode.Id);
+            _logger.LogWarning(ex, "dont-spoil-me: startup sweep failed");
         }
+    }
+
+    private Outcome Sync(Episode episode, bool quiet)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || !config.IsEnabled || episode.IsVirtualItem)
+            return Outcome.None;
+
+        var gate = _locks.GetOrAdd(episode.Id, _ => new object());
+        lock (gate)
+        {
+            try
+            {
+                var watched = config.OnlyUnwatched && AnyUserPlayed(episode);
+                return watched ? Restore(episode, quiet) : Hide(episode, quiet);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "dont-spoil-me: failed to sync {Episode}", Describe(episode));
+                return Outcome.None;
+            }
+        }
+    }
+
+    private bool AnyUserPlayed(Episode episode)
+        => _userManager.GetUsers().Any(u => _userDataManager.GetUserData(u, episode)?.Played == true);
+
+    private Outcome Hide(Episode episode, bool quiet)
+    {
+        _recentRestores.TryRemove(episode.Id, out _);
+
+        var poster = GetSeriesPosterPath(episode);
+        var image = GetEpisodeImagePath(episode);
+        if (poster is null || image is null)
+            return Outcome.None;
+
+        if (SamePath(poster, image) || FilesEqual(poster, image))
+            return Outcome.None; // already hidden
+
+        if (IsInMediaFolder(episode, image))
+        {
+            _logger.LogDebug("dont-spoil-me: {Episode} uses a local image in the media folder, not overwriting", Describe(episode));
+            return Outcome.None;
+        }
+
+        File.Copy(poster, image, overwrite: true);
+        Log(quiet, "dont-spoil-me: hid thumbnail for {Episode}", episode);
+        return Outcome.Hidden;
+    }
+
+    private Outcome Restore(Episode episode, bool quiet)
+    {
+        var poster = GetSeriesPosterPath(episode);
+        var image = GetEpisodeImagePath(episode);
+        if (poster is null)
+            return Outcome.None;
+
+        // image == null: the episode has no Primary image at all (e.g. older
+        // builds deleted it). Clients then fall back to the series poster, so
+        // it still looks hidden — fetch the real one.
+        var samePath = image is not null && SamePath(poster, image);
+        if (image is not null)
+        {
+            if (!samePath && !FilesEqual(poster, image))
+                return Outcome.None; // already showing the real thumbnail
+
+            if (IsInMediaFolder(episode, image))
+            {
+                _logger.LogWarning("dont-spoil-me: {Episode} has a local image in the media folder; can't restore it automatically", Describe(episode));
+                return Outcome.None;
+            }
+        }
+
+        // A refresh is already in flight (or was just tried) for this episode;
+        // its own ItemUpdated events must not queue another one. Episodes with no
+        // image at all only get one attempt per server start.
+        if (_recentRestores.TryGetValue(episode.Id, out var last) && (image is null || DateTime.UtcNow - last < RestoreCooldown))
+            return Outcome.None;
+
+        _recentRestores[episode.Id] = DateTime.UtcNow;
+
+        // Never delete the series poster itself.
+        if (image is not null && !samePath)
+            File.Delete(image);
+
+        _providerManager.QueueRefresh(
+            episode.Id,
+            new MetadataRefreshOptions(new DirectoryService(_fileSystem))
+            {
+                MetadataRefreshMode = MetadataRefreshMode.Default,
+                ImageRefreshMode = MetadataRefreshMode.FullRefresh,
+                ReplaceAllImages = true
+            },
+            RefreshPriority.High);
+
+        Log(quiet, "dont-spoil-me: restoring thumbnail for {Episode}", episode);
+        return Outcome.Restored;
+    }
+
+    private void Log(bool quiet, string message, Episode episode)
+    {
+        if (quiet)
+            _logger.LogDebug(message, Describe(episode));
+        else
+            _logger.LogInformation(message, Describe(episode));
+    }
+
+    private static string Describe(Episode e)
+        => $"{e.SeriesName} S{e.ParentIndexNumber:00}E{e.IndexNumber:00} \"{e.Name}\" ({e.Id})";
+
+    private static string? GetSeriesPosterPath(Episode episode)
+        => ExistingFile(episode.Series?.GetImageInfo(ImageType.Primary, 0)?.Path);
+
+    private static string? GetEpisodeImagePath(Episode episode)
+        => ExistingFile(episode.GetImageInfo(ImageType.Primary, 0)?.Path);
+
+    private static string? ExistingFile(string? path)
+        => !string.IsNullOrEmpty(path) && File.Exists(path) ? path : null;
+
+    private static bool SamePath(string a, string b)
+        => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsInMediaFolder(Episode episode, string imagePath)
+    {
+        var dir = string.IsNullOrEmpty(episode.Path) ? null : Path.GetDirectoryName(episode.Path);
+        return dir is not null && imagePath.StartsWith(dir + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+    }
+
+    private static bool FilesEqual(string a, string b)
+    {
+        if (new FileInfo(a).Length != new FileInfo(b).Length)
+            return false;
+        return File.ReadAllBytes(a).AsSpan().SequenceEqual(File.ReadAllBytes(b).AsSpan());
     }
 }
 CS
 
 cat > "$BUILD_DIR/DontSpoilMeWatchedListener.cs" << 'CS'
-using System;
-using System.Threading;
-using System.Threading.Tasks;
-using MediaBrowser.Controller.Entities.TV;
-using MediaBrowser.Controller.Library;
-using MediaBrowser.Model.Entities;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-
+// Merged into DontSpoilMeService (DontSpoilMeLibraryListener.cs) in 1.1.5.
 namespace Jellyfin.Plugin.DontSpoilMe;
-
-public class DontSpoilMeWatchedListener : IHostedService
-{
-    private readonly IUserDataManager _userDataManager;
-    private readonly ILogger<DontSpoilMeWatchedListener> _logger;
-
-    public DontSpoilMeWatchedListener(
-        IUserDataManager userDataManager,
-        ILogger<DontSpoilMeWatchedListener> logger)
-    {
-        _userDataManager = userDataManager;
-        _logger = logger;
-    }
-
-    public Task StartAsync(CancellationToken cancellationToken)
-    {
-        _userDataManager.UserDataSaved += OnUserDataSaved;
-        return Task.CompletedTask;
-    }
-
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        _userDataManager.UserDataSaved -= OnUserDataSaved;
-        return Task.CompletedTask;
-    }
-
-    private void OnUserDataSaved(object? sender, UserDataSaveEventArgs e)
-    {
-        var config = Plugin.Instance?.Configuration;
-        if (config is null || !config.IsEnabled || !config.OnlyUnwatched)
-            return;
-
-        if (e.Item is not Episode episode)
-            return;
-
-        if (!e.UserData.Played)
-            return;
-
-        _logger.LogInformation("dont-spoil-me: episode {Id} marked watched, removing image override", episode.Id);
-
-        try
-        {
-            episode.DeleteImageAsync(ImageType.Primary, 0).GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "dont-spoil-me: failed to delete image for episode {Id}", episode.Id);
-        }
-    }
-}
 CS
 
 cat > "$BUILD_DIR/Api/DontSpoilMeController.cs" << 'CS'

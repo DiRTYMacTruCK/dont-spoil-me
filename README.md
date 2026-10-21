@@ -13,7 +13,7 @@ Replaces episode thumbnail images with the series poster so spoiler screenshots 
 
 | Jellyfin version | Plugin version |
 |------------------|----------------|
-| 12.x             | 1.1.6          |
+| 12.x             | 2.0.0          |
 | 10.11.x          | 1.1.3          |
 
 The catalog serves the right version for your server automatically.
@@ -56,7 +56,7 @@ The startup sweep handles your existing library, so no manual metadata refresh i
 1. Download the zip for your Jellyfin version from the releases page:
    https://github.com/DiRTYMacTruCK/dont-spoil-me/releases
 
-   Jellyfin 12.x:    dont-spoil-me_1.1.6.0.zip
+   Jellyfin 12.x:    dont-spoil-me_2.0.0.0.zip
    Jellyfin 10.11.x: dont-spoil-me_1.1.3.0.zip
 
 2. Unzip it to get Jellyfin.Plugin.DontSpoilMe.dll
@@ -158,7 +158,7 @@ Developer and Repository show Unknown:
 
 ## Changelog
 
-1.1.6 (Jellyfin 12)
+2.0.0 (Jellyfin 12)
 - Rewritten as a single service that checks the actual image files instead of tracking state in memory
 - Watched episodes now reliably get their real thumbnail back (fixes posters sticking after marking watched)
 - Marking an episode unwatched re-hides it

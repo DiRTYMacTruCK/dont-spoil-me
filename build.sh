@@ -13,7 +13,7 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 PLUGIN_NAME="dont-spoil-me"
 ASSEMBLY="Jellyfin.Plugin.DontSpoilMe"
-VERSION="1.1.6.0"
+VERSION="2.0.0.0"
 GUID="b2c3d4e5-f6a7-8901-bcde-f12345678901"
 BUILD_DIR="/tmp/dontspoilme_build"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -156,7 +156,7 @@ cat > "$BUILD_DIR/DontSpoilMe.csproj" << CSPROJ
     <AssemblyName>${ASSEMBLY}</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.DontSpoilMe</RootNamespace>
     <Nullable>enable</Nullable>
-    <Version>1.1.6</Version>
+    <Version>2.0.0</Version>
     <Company>DiRTYMacTruCK</Company>
     <Authors>DiRTYMacTruCK</Authors>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>

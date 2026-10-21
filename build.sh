@@ -2,7 +2,7 @@
 # =============================================================================
 # dont-spoil-me — Jellyfin Plugin Build & Install Script
 # =============================================================================
-# Supports bare metal and Docker Jellyfin installs.
+# Supports bare metal and Docker Jellyfin installs. Requires Jellyfin 12+.
 # Run once — builds, installs, and restarts Jellyfin automatically.
 #
 # Usage:
@@ -27,7 +27,7 @@ echo "=============================="
 # STEP 1 — Define helper to locate dotnet (version resolved in Step 2b)
 # =============================================================================
 find_dotnet() {
-    local min_ver="${1:-9}"
+    local min_ver="${1:-10}"
     for candidate in \
         "$(which dotnet 2>/dev/null || true)" \
         "/usr/bin/dotnet" \
@@ -54,7 +54,7 @@ REQUIRED_DOTNET_MAJOR=10
 # STEP 2 — Find Jellyfin DLLs (bare metal or Docker)
 # =============================================================================
 JELLYFIN_LIB=""
-JELLYFIN_VERSION="10.11.0.0"
+JELLYFIN_VERSION=""
 JELLYFIN_CONTAINER=""
 
 # Check bare metal first
@@ -113,12 +113,32 @@ if [ -z "$JELLYFIN_LIB" ]; then
         }
     done
 
-    JELLYFIN_VERSION=$(strings "$TMP_DLL_DIR/MediaBrowser.Model.dll" \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "10.11.0.0")
-
     JELLYFIN_LIB="$TMP_DLL_DIR"
-    echo "✅  DLLs ready (Jellyfin $JELLYFIN_VERSION)"
+    echo "✅  DLLs ready"
 fi
+
+# Ask the running server for its version (public endpoint, no API key needed)
+JELLYFIN_URL="${JELLYFIN_URL:-http://localhost:8096}"
+JELLYFIN_VERSION=$(curl -fsS --max-time 5 "${JELLYFIN_URL}/System/Info/Public" 2>/dev/null \
+    | grep -oE '"Version":"[0-9.]+"' | grep -oE '[0-9.]+' | head -1 || true)
+
+if [ -z "$JELLYFIN_VERSION" ]; then
+    echo "⚠️   Couldn't reach Jellyfin at ${JELLYFIN_URL} to read its version — assuming 12.0.0"
+    echo "    (set JELLYFIN_URL=http://host:port if it runs elsewhere)"
+    JELLYFIN_VERSION="12.0.0"
+fi
+
+JELLYFIN_MAJOR="${JELLYFIN_VERSION%%.*}"
+if [ "$JELLYFIN_MAJOR" -lt 12 ] 2>/dev/null; then
+    echo "❌  Jellyfin ${JELLYFIN_VERSION} detected — dont-spoil-me 2.x requires Jellyfin 12 or newer."
+    exit 1
+fi
+
+# Pad to 4 parts for targetAbi (12.0.1 -> 12.0.1.0)
+while [ "$(echo "$JELLYFIN_VERSION" | tr -cd '.' | wc -c)" -lt 3 ]; do
+    JELLYFIN_VERSION="${JELLYFIN_VERSION}.0"
+done
+echo "✅  Jellyfin version: ${JELLYFIN_VERSION}"
 
 echo "✅  Jellyfin DLLs: $JELLYFIN_LIB"
 
@@ -268,15 +288,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
 }
 CS
 
-cat > "$BUILD_DIR/DontSpoilMeImageProvider.cs" << 'CS'
-// This file intentionally left minimal — image swapping is now handled
-// by DontSpoilMeLibraryListener which physically copies the series poster
-// over the episode image after metadata refresh completes.
-// This ensures we override TMDB's cached images reliably.
-namespace Jellyfin.Plugin.DontSpoilMe;
-CS
-
-cat > "$BUILD_DIR/DontSpoilMeLibraryListener.cs" << 'CS'
+cat > "$BUILD_DIR/DontSpoilMeService.cs" << 'CS'
 using System;
 using System.Collections.Concurrent;
 using System.IO;
@@ -535,11 +547,6 @@ public class DontSpoilMeService : IHostedService, IDisposable
 }
 CS
 
-cat > "$BUILD_DIR/DontSpoilMeWatchedListener.cs" << 'CS'
-// Merged into DontSpoilMeService (DontSpoilMeLibraryListener.cs) in 1.1.5.
-namespace Jellyfin.Plugin.DontSpoilMe;
-CS
-
 cat > "$BUILD_DIR/Api/DontSpoilMeController.cs" << 'CS'
 using Jellyfin.Plugin.DontSpoilMe.Configuration;
 using Microsoft.AspNetCore.Authorization;
@@ -578,8 +585,7 @@ cat > "$BUILD_DIR/Configuration/configPage.html" << 'HTML'
                 <h2 class="sectionTitle">🙈 dont-spoil-me</h2>
             </div>
             <p>Shows the series poster instead of episode thumbnails to prevent spoilers.</p>
-            <p><strong>Note:</strong> Jellyfin 10.11.x has a known issue where plugin config pages appear blank.
-            Edit the config file directly until this is fixed by Jellyfin.
+            <p>Settings are edited in the plugin's XML config file.
             See the README on GitHub for instructions.</p>
         </div>
     </div>
@@ -614,32 +620,10 @@ zip "$ZIPFILE" "${ASSEMBLY}.dll"
 rm -rf /tmp/dontspoilme_pkg
 
 CHECKSUM=$(md5sum "$ZIPFILE" | awk '{print $1}')
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-cat > "${DIST_DIR}/manifest.json" << MANIFEST
-[
-  {
-    "guid": "${GUID}",
-    "name": "dont-spoil-me",
-    "description": "Replaces episode thumbnail images with the series poster to prevent spoilers.",
-    "overview": "Hides spoiler thumbnails for unwatched TV episodes by showing the series poster instead.",
-    "owner": "DiRTYMacTruCK",
-    "category": "General",
-    "versions": [
-      {
-        "version": "${VERSION}",
-        "changelog": "Auto-create default config file on install. Note Jellyfin 10.11.x config page issue.",
-        "targetAbi": "${JELLYFIN_VERSION}",
-        "sourceUrl": "https://github.com/DiRTYMacTruCK/dont-spoil-me/releases/download/v1.1.2/${PLUGIN_NAME}_${VERSION}.zip",
-        "checksum": "${CHECKSUM}",
-        "timestamp": "${TIMESTAMP}"
-      }
-    ]
-  }
-]
-MANIFEST
 
 echo "✅  Packaged: $ZIPFILE"
+echo "    md5: ${CHECKSUM}  (for docs/manifest.json)"
 
 # =============================================================================
 # STEP 6 — Install into Jellyfin
